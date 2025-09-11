@@ -1,0 +1,36 @@
+# Model Params
+use_true_labels: False
+use_recalibrator: False
+model_type: "vit_small"
+arch: "dino"
+use_fit_model: False
+dino_feat_type: "feat"
+# projection_type: ~
+projection_type: "nonlinear"
+# projection_type: linear
+dino_patch_size: 16
+granularity: 1
+continuous: True
+
+head_idx_patch: 0
+head_idx_cls: 1
+dim: 768
+output_dim: 256
+hidden_dim: [2048, 2048]
+dropout: True
+pretrained_weights: ~
+pretrained_weights_tea_cls: ~
+pretrained_weights_tea_patch: ~
+n_projection_head: 2
+n_layers_projection_head: 3
+nmb_prototypes: [512,4096]
+depth_in: 0
+depth_out: 0
+selective_layer_start: 11
+selective_cache_num: 64
+selective_kernel_size: 3
+drop_rate: 0
+attn_drop_rate: 0
+drop_path_rate: 0
+vit_type: "depth"
+feat_type_default: "all"

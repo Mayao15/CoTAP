@@ -1,0 +1,47 @@
+basic:
+  output_root: '../'
+  experiment_name: "debug"
+  azureml_logging: True
+  submitting_to_aml: False
+  reset_probe_steps: ~
+  eval_save_dir: ~
+
+  # Logging params
+  n_images: 5
+  scalar_log_freq: 200
+  checkpoint_freq: 1601
+  val_freq: 1600
+  hist_freq: 200
+  num_workers: 12
+  precision: 16
+  enable_progress_bar: True
+
+  use_true_labels: False
+  eval_only: False
+  resume_from_checkpoint: ~
+  resume_test: ~
+
+training:
+  ema: 0.9999
+  batch_size: 64
+  lr: 3e-5
+  weight_decay: 0.024
+  weight_decay_end: 0.24
+  stop_at_zero: True
+  max_steps: 100000
+  num_gpus: 2
+  num_neighbors_chosen: 1
+  use_mask: False
+  merge_step_ratio: 0.5
+
+hydra:
+  run:
+    dir: "."
+  output_subdir: ~
+
+defaults:
+  - model: vit_small_16
+  # - model: vit_base_8
+  - loss_fn: full_loss
+  - dataset_train: coco+in1k
+  - dataset_val: cocostuff27+imagenet1k

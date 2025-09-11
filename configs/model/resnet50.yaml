@@ -1,0 +1,11 @@
+# Model Params
+use_true_labels: False
+use_recalibrator: False
+model_type: "resnet"
+arch: "resnet"
+use_fit_model: False
+granularity: 1
+continuous: True
+dim: 2048
+dropout: True
+pretrained_weights: ~

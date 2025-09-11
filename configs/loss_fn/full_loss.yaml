@@ -1,0 +1,56 @@
+share:
+  applied_subset_patch: 0
+  applied_subset_cls: 1
+  sinkhorn_iterations: 3
+  len_patch_queue: 262144
+  len_cls_queue: 32768
+  sinkhonrn_temperature_patch: 0.05
+  sinkhonrn_temperature_cls: 0.07
+
+innersample:
+  name: InnerSample
+  prefix: inner
+  weight_patch_inner: 1
+  weight_cls_inner: 1
+  temperature_patch: 0.1
+  temperature_cls: 0.1
+  kernel_size: 1
+  crops_for_assign: [0, 1]
+  roi_align_kernel_size: 6
+
+intrasample:
+  name: IntraSample
+  prefix: intra
+  pos_only: False
+  weight_patch_intra: 1
+  weight_cls_intra: 1
+  weight_patch_intra_local: 0
+  weight_cls_intra_local: 0
+  temperature_patch: 0.2
+  temperature_cls: 0.2
+  topk: 5
+  tau: 0.5
+  weight_thres: -0.2
+  margin: 0.5
+  ap_mul: 1
+  pool_ks: [7,14]
+  patch_norm: False
+
+entropy_max:
+  name: EntropyMax
+  temperature: 0.1
+  weight: 1
+
+# kernel_align:
+#   name: KernelAlign
+#   weight: 1
+
+# identity:
+#   name: Identity
+#   prefix: idt
+#   weight_patch_self: 0.0
+#   weight_patch_rebuild: 0.0
+#   weight_cls_self: 0.0
+#   temperature: 0.1
+#   sinkhorn_iterations: 3
+#   kernel_size: 1

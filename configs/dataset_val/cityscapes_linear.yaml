@@ -1,0 +1,28 @@
+dataset_seg:
+  pytorch_data_dir: './data'
+  lmdb_path: ~ #'./data/lmdb'
+  tester_path: ~
+  prefix: 'cityscapes'
+  dataset_name: "cityscapes"
+  has_labels: False
+  num_neighbors: 7
+  n_classes: 19
+  ignore_classes: []
+  crop_type: ~ #"five"
+  head: 'linear'
+  ft_res: 896
+  res: 1024
+  target_res: -1
+  loader_crop_type: "center"
+  bg: 0
+  include_stuff: True
+  seed: 19270817
+  extra_clusters: 0
+  update_batches: 5
+  kmeans_n_iter: 30
+  resume: ~
+  lr: 1e-3
+  ft_batchsize: 64
+  batchsize: 4
+  num_finetune_sample: 100000
+  check_val_every_n_epoch: 10

@@ -1,0 +1,18 @@
+seed: 19270817
+resume: ~
+
+evaluation_seg:
+  extra_clusters: 0
+  update_batches: 5
+  kmeans_n_iter: 30
+  include_stuff: True
+  lr: 3e-3
+
+evaluation_seg:
+  seed: 19270817
+  extra_clusters: 0
+  update_batches: 5
+  kmeans_n_iter: 30
+  include_stuff: True
+  resume: ~
+  lr: 3e-3
