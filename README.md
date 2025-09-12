@@ -136,21 +136,21 @@ bash scripts/test_seg.sh
 ```
 
 
-<!-- ## 🖋️ Citation
+## 🖋️ Citation
 
 If you find this repository useful in your research, please cite the following papers:
 
 ```
-@misc{liu2025futurepasttamingtemporal,
-      title={When the Future Becomes the Past: Taming Temporal Correspondence for Self-supervised Video Representation Learning}, 
-      author={Yang Liu and Qianqian Xu and Peisong Wen and Siran Dai and Qingming Huang},
+@misc{wen2025semantic,
+      title={Semantic Concentration for Self-Supervised Dense Representations Learning},
+      author={Peisong Wen and Qianqian Xu and Siran Dai and Runmin Cong and Qingming Huang},
       year={2025},
-      eprint={2503.15096},
+      eprint={2509.09429},
       archivePrefix={arXiv},
       primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2503.15096}, 
+      url={https://arxiv.org/abs/2509.09429},
 }
-``` -->
+```
 
 ## 📧 Contact us
 
