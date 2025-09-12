@@ -3,7 +3,7 @@
 This is the official code for the paper "Semantic Concentration for Self-Supervised Dense Representations Learning" accepted by IEEE Transactions on Pattern Analysis and Machine Intelligence (TPAMI 2025). 
 <!-- This paper is available at [**here**](https://arxiv.org/abs/2503.15096). -->
 
-<!-- [![paper](https://img.shields.io/badge/arXiv-Paper-b31b1b.svg?style=flat)](https://arxiv.org/abs/2503.15096) [![slides](https://img.shields.io/badge/Presentation-Slides-B762C1)](https://github.com/yafeng19/T-CORE) [![Website](https://img.shields.io/badge/Project-Website-87CEEB)](https://github.com/yafeng19/T-CORE) [![video](https://img.shields.io/badge/Video-Presentation-F9D371)](https://github.com/yafeng19/T-CORE) -->
+[![paper](https://img.shields.io/badge/arXiv-Paper-b31b1b.svg?style=flat)](https://arxiv.org/abs/2509.09429)
 
 **Semantic Concentration for Self-Supervised Dense Representations Learning**
 
