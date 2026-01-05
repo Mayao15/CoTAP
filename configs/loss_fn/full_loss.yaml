@@ -35,6 +35,9 @@ intrasample:
   ap_mul: 1
   pool_ks: [7,14]
   patch_norm: False
+  enable_sacl: False
+  sacl_rho: 0.05
+  sacl_gamma: 0.2
 
 entropy_max:
   name: EntropyMax

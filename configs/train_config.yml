@@ -1,5 +1,5 @@
 basic:
-  output_root: '../'
+  output_root: './'
   experiment_name: "debug"
   azureml_logging: True
   submitting_to_aml: False

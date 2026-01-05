@@ -24,6 +24,11 @@ class IntraSampleLoss(nn.Module):
         self.softmax = nn.Softmax(dim=1)
         self.aux = HuberAuxiliaryLoss(self.cfg.tau)
 
+        # SACL (Feature-SAM) parameters
+        self.enable_sacl = getattr(cfg, 'enable_sacl', False)
+        self.sacl_rho = getattr(cfg, 'sacl_rho', 0.05)
+        self.sacl_gamma = getattr(cfg, 'sacl_gamma', 0.2)
+
     def preprocess_feats(self, feats_gc, nmb_crops):
         # nmb_crops = self.cfg.nmb_crops
         bs = feats_gc.shape[0] // 2 // nmb_crops
@@ -107,7 +112,24 @@ class IntraSampleLoss(nn.Module):
             # print_tensor(sim_stu, 'sim_stu')
             # print_tensor(sim_tea, 'sim_tea')
 
-            loss += self.helper(sim_tea, sim_stu, is_match)
+            # loss += self.helper(sim_tea, sim_stu, is_match)
+
+            # Entropy Weighting for SACL
+            entropy_weight = None
+            if self.enable_sacl:
+                # Compute entropy of the teacher distribution
+                # sim_tea is [B, N_total]. 
+                # Convert cosine sim to probs for entropy calculation.
+                # Assuming tau is available in cfg, otherwise use default
+                tau = getattr(self.cfg, 'tau', 0.1)
+                probs = F.softmax(sim_tea / tau, dim=1)
+                entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=1) # [B]
+                # Weight: exp(-gamma * H)
+                entropy_weight = torch.exp(-self.sacl_gamma * entropy) # [B]
+                # Expand weight to match flattened size in helper
+                # helper receives flattened tensors. 
+                # We need to pass this weight to helper.
+            loss += self.helper(sim_tea, sim_stu, is_match, entropy_weight=entropy_weight)
 
 
             # sim_stu_all.append(sim_stu.view(1, -1))
@@ -139,8 +161,18 @@ class IntraSampleLoss(nn.Module):
 
         return weight
 
-    def helper(self, targets, preds, pseudo_label=None, **kwargs):
+    # def helper(self, targets, preds, pseudo_label=None, **kwargs):
+    def helper(self, targets, preds, pseudo_label=None, entropy_weight=None, **kwargs):
 
+        entropy_weight = kwargs.get('entropy_weight', None)
+        # Expand entropy_weight if provided to match flattened dimension
+        if entropy_weight is not None:
+             # entropy_weight is [B]
+             # targets is [B, N]
+             # We want weight to be [B, N] (same for all N) then flattened to [1, B*N]
+             b, n = targets.shape
+             expanded_weight = entropy_weight.unsqueeze(1).expand(b, n).reshape(1, -1)
+        
         assert not targets.requires_grad and preds.requires_grad
 
         targets = targets.view(1, -1)
@@ -149,6 +181,9 @@ class IntraSampleLoss(nn.Module):
 
         with torch.no_grad():
             weight = self.weight_fn(targets, pseudo_label)
+            if entropy_weight is not None:
+                weight = weight * expanded_weight
+         
             loss_pp = self.aux.run_pp(targets, preds)
 
         loss_pn = self.aux.run_pn(targets, preds)
@@ -176,8 +211,57 @@ class IntraSampleLoss(nn.Module):
 
         gc_feat_stu, gc_feat_pos_stu = self.preprocess_feats(gc_feat_stu, n_gc)
         gc_feat_tea, gc_feat_pos_tea = self.preprocess_feats(gc_feat_tea, n_gc)
-        loss_patch = self.ranking_cos_patch_loss(gc_feat_tea, gc_feat_pos_tea, \
-            gc_feat_stu, gc_feat_pos_stu, _keep)
+
+        # Standard Loss Calculation or SACL
+        if self.enable_sacl:
+            # 1. Compute Gradients for Feature-SAM
+            # We need to enable gradients for the student features to calculate the perturbation
+            # Note: gc_feat_stu and gc_feat_pos_stu are derived from outputs_gc_stu
+            # We should detach them to avoid double backprop issues if we were optimizing the model here,
+            # but we just want gradients w.r.t these features.
+            # However, since we want to modify the graph input for the final loss, 
+            # let's work on a detached clone for gradient calculation.
+            
+            feat_stu_grad = gc_feat_stu.detach().clone().requires_grad_(True)
+            feat_pos_stu_grad = gc_feat_pos_stu.detach().clone().requires_grad_(True)
+
+            loss_for_grad = self.ranking_cos_patch_loss(
+                gc_feat_tea, gc_feat_pos_tea,
+                feat_stu_grad, feat_pos_stu_grad, _keep
+            )
+            
+            # 2. Generate Adversarial Perturbation
+            # We want to MAXIMIZE loss, so we move in direction of gradient.
+            # Gradients w.r.t features
+            grads = torch.autograd.grad(loss_for_grad, [feat_stu_grad, feat_pos_stu_grad])
+            
+            # Normalize gradients (L2 norm per feature vector)
+            # Shapes are [nmb_crops, bs, D, H, W]
+            # We normalize over D dimension (dim=2)
+            grad_stu, grad_pos_stu = grads
+            
+            def compute_delta(grad, rho):
+                norm = torch.norm(grad, p=2, dim=2, keepdim=True) + 1e-8
+                return rho * grad / norm
+
+            delta_stu = compute_delta(grad_stu, self.sacl_rho)
+            delta_pos_stu = compute_delta(grad_pos_stu, self.sacl_rho)
+            
+            # 3. Compute Final Loss with Perturbed Features
+            # We treat perturbation as constant (detach)
+            perturbed_feat_stu = gc_feat_stu + delta_stu.detach()
+            perturbed_feat_pos_stu = gc_feat_pos_stu + delta_pos_stu.detach()
+            
+            loss_patch = self.ranking_cos_patch_loss(
+                gc_feat_tea, gc_feat_pos_tea,
+                perturbed_feat_stu, perturbed_feat_pos_stu, _keep
+            )
+            
+        else:
+            loss_patch = self.ranking_cos_patch_loss(
+                gc_feat_tea, gc_feat_pos_tea,
+                gc_feat_stu, gc_feat_pos_stu, _keep
+            )
 
         losses = [
             {
