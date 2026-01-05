@@ -14,6 +14,7 @@ from torch.utils.data import DataLoader
 from pytorch_lightning import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.loggers import TensorBoardLogger
+from pytorch_lightning.strategies import DDPStrategy
 from lightning_lite.utilities.seed import seed_everything
 from datetime import datetime
 from omegaconf import DictConfig, OmegaConf
@@ -136,12 +137,15 @@ class MaimModel(pl.LightningModule):
         cfg = self.cfg.dataset_val
         val_loaders = []
         for i, key in enumerate(cfg.keys()):
+            # 减少 num_workers 以避免共享内存不足
+            num_workers = min(4, self.cfg.basic.num_workers // 2) if hasattr(self.cfg.basic, 'num_workers') else 4
             val_loaders.append(DataLoader(
                 self.val_set[i],
                 cfg[key].batchsize,
                 shuffle=False,
-                num_workers=16,
+                num_workers=num_workers,
                 pin_memory=False,
+                persistent_workers=True if num_workers > 0 else False,
             ))
         return val_loaders 
 
@@ -149,12 +153,15 @@ class MaimModel(pl.LightningModule):
         cfg = self.cfg.dataset_val
         val_loaders = []
         for i, key in enumerate(cfg.keys()):
+            # 减少 num_workers 以避免共享内存不足
+            num_workers = min(4, self.cfg.basic.num_workers // 2) if hasattr(self.cfg.basic, 'num_workers') else 4
             val_loaders.append(DataLoader(
                 self.val_set[i],
                 cfg[key].batchsize,
                 shuffle=False,
-                num_workers=16,
+                num_workers=num_workers,
                 pin_memory=False,
+                persistent_workers=True if num_workers > 0 else False,
             ))
         return val_loaders
 
@@ -170,8 +177,11 @@ class MaimModel(pl.LightningModule):
                 drop_last=False
             )
             batchsize = cfg[key].ft_batchsize // self.cfg.training.num_gpus
+            # 减少 num_workers 以避免共享内存不足，并添加 persistent_workers 减少开销
+            num_workers = min(4, self.cfg.basic.num_workers // 2) if hasattr(self.cfg.basic, 'num_workers') else 4
             ft_loaders.append(torch.utils.data.DataLoader(self.finetune_set[i],
-                batch_size=batchsize, num_workers=16, sampler=train_sampler))
+                batch_size=batchsize, num_workers=num_workers, sampler=train_sampler,
+                persistent_workers=True if num_workers > 0 else False))
         return ft_loaders
 
     @torch.no_grad()
@@ -191,6 +201,11 @@ class MaimModel(pl.LightningModule):
         head_idx_cls = self.cfg.model.head_idx_cls
 
         def merge_input(key, use_transform=False, index=0, subset_index=0):
+            # When training with a single dataset (e.g., dataset_train=in1k),
+            # `batch` is a list of length 1. Some configs (e.g., coco+in1k)
+            # use subset_index=1 for the cls branch; clamp it to avoid IndexError.
+            if subset_index >= len(batch):
+                subset_index = len(batch) - 1
             if not key in batch[subset_index].keys():
                 return None
 
@@ -217,10 +232,18 @@ class MaimModel(pl.LightningModule):
             else:
                 return None
 
-        imgs_patch = merge_input('img', True, 0, 0)
-        imgs_cls = merge_input('img', True, 0, 1)
-        imgs_tea_patch = merge_input('img', False, 0, 0)
-        imgs_tea_cls = merge_input('img', False, 0, 1)
+        # Select which dataset subset provides patch/cls branches.
+        # For multi-dataset training like coco+in1k, typical setting is patch=0, cls=1.
+        # For single-dataset training like in1k, both should fall back to 0.
+        subset_idx_patch = getattr(self.cfg.loss_fn.share, 'applied_subset_patch', 0)
+        subset_idx_cls = getattr(self.cfg.loss_fn.share, 'applied_subset_cls', 0)
+        subset_idx_patch = min(int(subset_idx_patch), len(batch) - 1)
+        subset_idx_cls = min(int(subset_idx_cls), len(batch) - 1)
+
+        imgs_patch = merge_input('img', True, 0, subset_idx_patch)
+        imgs_cls = merge_input('img', True, 0, subset_idx_cls)
+        imgs_tea_patch = merge_input('img', False, 0, subset_idx_patch)
+        imgs_tea_cls = merge_input('img', False, 0, subset_idx_cls)
         masks = merge_multiple_datasets('mask')
         bboxes = {k:torch.cat([
             torch.cat([batch[i]["bbox_dict"][k], batch[i]["bbox_dict_pos"][k]]) for i in range(len(batch))
@@ -242,8 +265,8 @@ class MaimModel(pl.LightningModule):
         }
 
         if self.cfg.dataset_train.nmb_crops[1] > 0:
-            lc_imgs_patch = merge_input('img', True, 1, 0)
-            lc_imgs_cls = merge_input('img', True, 1, 1)
+            lc_imgs_patch = merge_input('img', True, 1, subset_idx_patch)
+            lc_imgs_cls = merge_input('img', True, 1, subset_idx_cls)
             lc_outputs_stu_patch = self.net(lc_imgs_patch, proj_head=head_idx_patch)
             lc_outputs_stu_cls = self.net(lc_imgs_cls, proj_head=head_idx_cls)
             lc_outputs_stu = {
@@ -308,6 +331,8 @@ class MaimModel(pl.LightningModule):
             epoch = 0
             num_finetune_sample = self.cfg.dataset_val[keys[i]].num_finetune_sample
             loader = loaders[i]
+            loader.sampler.set_epoch(epoch)
+            loader_iterator = iter(loader)
             iterator = range(0, num_finetune_sample, loader.batch_size * self.cfg.training.num_gpus)
             if self.global_rank == 0 and self.cfg.basic.enable_progress_bar:
                 iterator = tqdm(iterator)
@@ -404,7 +429,7 @@ class MaimModel(pl.LightningModule):
         super().test_epoch_end(outputs)
         tb_metrics = {}
         for i in range(len(self.tester)):
-            tb_metrics.update(**self.tester[i].compute(outputs, pl_module=self))
+            tb_metrics.update(self.tester[i].compute(outputs, pl_module=self))
 
         if self.global_rank == 0:
             print(tb_metrics)
@@ -495,7 +520,7 @@ def my_app(cfg: DictConfig) -> None:
     seed_everything(seed=0)
 
     ## setup gpus
-    gpu_args = dict(devices=cfg.training.num_gpus, accelerator='gpu', strategy='ddp_find_unused_parameters_false')
+    gpu_args = dict(devices=cfg.training.num_gpus, accelerator='gpu', strategy=DDPStrategy(find_unused_parameters=True))
 
     ## setup logger
     OmegaConf.set_struct(cfg, False)
@@ -561,7 +586,7 @@ def my_app(cfg: DictConfig) -> None:
                 dirpath=osp.join(checkpoint_dir, name),
                 save_top_k=5,
                 every_n_train_steps=10000,
-                monitor="test/cocostuff27_seg/linear_mIoU",
+                monitor="test/cocostuff27_seg/mIoU",
                 mode="max",
             )
         ],

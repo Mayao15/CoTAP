@@ -25,7 +25,7 @@ class SematicSegTester(nn.Module):
         # self.cluster_metrics.reset()
         self.linear_metrics.reset()
 
-    def finetune_step(self, feats_patch, sal, label, pl_module, **kwargs):
+    def finetune_step(self, feats_patch, label, pl_module, sal=None, **kwargs):
         if self.cfg.include_stuff:
             sal = None
         if sal is not None:

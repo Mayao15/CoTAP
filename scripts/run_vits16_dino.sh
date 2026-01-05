@@ -1,7 +1,7 @@
 #!/bin/bash
 
-CUDA_VISIBLE_DEVICES=0,1,2,3 python train.py \
-loss_fn=full_loss training.num_gpus=4 dataset_train=coco+in1k training.batch_size=28 training.use_mask=False training.max_steps=240000 training.lr=3e-5 model.n_projection_head=2 model.nmb_prototypes=[512,4096] \
+torchrun --nproc_per_node=8 train.py \
+loss_fn=full_loss training.num_gpus=8 dataset_train=coco+in1k training.batch_size=32 training.use_mask=False training.max_steps=240000 training.lr=3e-5 model.n_projection_head=2 model.nmb_prototypes=[512,4096] \
 basic.experiment_name="vits16/dino" \
 model.vit_type='depth' \
 model.selective_layer_start=11 \

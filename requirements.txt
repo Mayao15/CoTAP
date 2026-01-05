@@ -1,19 +1,19 @@
 azureml==0.2.7
 azureml_core==1.48.0
-easydict==1.10
-faiss==1.7.2
+# easydict==1.10
+faiss-gpu==1.7.2
 hydra-core==1.3.2
 lmdb==1.4.0
 numpy==1.19.5
 omegaconf==2.3.0
 opencv_python==4.7.0.68
 Pillow==9.3.0
-Pillow==11.3.0
+# Pillow==11.3.0
 pytorch_lightning==1.8.6
-scipy==1.16.1
-torch==1.13.1+cu116
+scipy==1.7.3
+torch==1.13.1
 torchmetrics==0.11.0
-torchvision==0.14.1+cu116
+torchvision==0.14.1
 tqdm==4.64.1
 wget==3.2
-xformers==0.0.32.post2
+# xformers==0.0.32.post2

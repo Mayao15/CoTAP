@@ -1,2 +1,17 @@
 data/**
 checkpoints*/**
+
+.idea/
+data/
+
+*.pth
+tmp*.py
+*.pdf
+.specstory/
+docs/
+logs/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class

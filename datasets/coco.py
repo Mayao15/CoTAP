@@ -58,7 +58,7 @@ class COCO(Dataset):
                     img_ids = [fn.rstrip() for fn in f.readlines()]
                     for img_id in img_ids:
                         self.image_files.append(osp.join(self.root, "images", split_dir, img_id + ".jpg"))
-                        self.label_files.append(osp.join(self.root, "annotations_27", split_dir, img_id + ".png"))
+                        self.label_files.append(osp.join(self.root, "annotations", split_dir, img_id + ".png"))
         else:
             self.image_files = []
             self.label_files = None
