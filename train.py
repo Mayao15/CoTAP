@@ -577,6 +577,9 @@ def my_app(cfg: DictConfig) -> None:
         val_check_interval=cfg.basic.val_freq,
         log_every_n_steps=cfg.basic.scalar_log_freq,
         logger=tb_logger,
+        # Avoid misleading metrics during Lightning "sanity checking", which by default
+        # runs only a couple of val batches and can produce artificially high/unstable KNN.
+        num_sanity_val_steps=0,
         max_steps=1 if cfg.basic.eval_only else cfg.training.max_steps,
         inference_mode=False,
         precision=cfg.basic.precision,

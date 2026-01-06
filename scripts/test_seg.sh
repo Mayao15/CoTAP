@@ -5,16 +5,10 @@ evaluate_group="voc_linear" # voc_linear voc_fcn cocostuff27_linear cocostuff27_
 
 lrs=('3e-3')
 
-model=('ours/vits16/dino+cotap' \
-'ours/vits16/ibot+cotap' \
-'ours/vits16/leopart+cotap' \
-'ours/vits16/mugs+cotap'
+model=('competitor/vits16/dino' \
 )
 
-save_name=('dino+cotap' \
-'ibot+cotap' \
-'leopart+cotap' \
-'mugs+cotap'
+save_name=('dino' \
 )
 
 n_devices=${#devices[@]}
