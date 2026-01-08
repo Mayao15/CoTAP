@@ -28,6 +28,8 @@ class IntraSampleLoss(nn.Module):
         self.enable_sacl = getattr(cfg, 'enable_sacl', False)
         self.sacl_rho = getattr(cfg, 'sacl_rho', 0.05)
         self.sacl_gamma = getattr(cfg, 'sacl_gamma', 0.2)
+        # Weight for explicit negative similarity penalty to prevent feature collapse
+        self.neg_sim_weight = getattr(cfg, 'neg_sim_weight', 1.0)
 
     def preprocess_feats(self, feats_gc, nmb_crops):
         # nmb_crops = self.cfg.nmb_crops
@@ -59,12 +61,13 @@ class IntraSampleLoss(nn.Module):
         return loss
 
     def ranking_cos_patch_loss(self, ori_feat_tea, ori_feat_pos_tea, \
-        ori_feat_stu, ori_feat_pos_stu, ori_keep):
+        ori_feat_stu, ori_feat_pos_stu, ori_keep, return_entropy=False):
         # perm = super_perm(len(ori_feat_tea), ori_feat_tea.device)
 
         bs, n_gc, d, h, w = ori_feat_stu.shape
         ori_keep, ori_keep_pos = ori_keep.reshape(2*bs*n_gc, 1, h, w).chunk(2)
         loss = 0
+        total_entropy = 0.0
 
         for ks in self.cfg.pool_ks:
             feat_stu = F.adaptive_avg_pool2d(ori_feat_stu.reshape(bs*n_gc,d,h,w), (ks,ks))
@@ -116,7 +119,9 @@ class IntraSampleLoss(nn.Module):
 
             # Entropy Weighting for SACL
             entropy_weight = None
-            if self.enable_sacl:
+            
+            # Always compute entropy if requested or SACL enabled
+            if self.enable_sacl or return_entropy:
                 # Compute entropy of the teacher distribution
                 # sim_tea is [B, N_total]. 
                 # Convert cosine sim to probs for entropy calculation.
@@ -124,13 +129,23 @@ class IntraSampleLoss(nn.Module):
                 tau = getattr(self.cfg, 'tau', 0.1)
                 probs = F.softmax(sim_tea / tau, dim=1)
                 entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=1) # [B]
-                # Weight: exp(-gamma * H)
-                entropy_weight = torch.exp(-self.sacl_gamma * entropy) # [B]
-                # Expand weight to match flattened size in helper
-                # helper receives flattened tensors. 
-                # We need to pass this weight to helper.
+                
+                if return_entropy:
+                    total_entropy += entropy.mean()
+
+                if self.enable_sacl:
+                    # Weight: exp(-gamma * H)
+                    entropy_weight = torch.exp(-self.sacl_gamma * entropy) # [B]
+                    # Expand weight to match flattened size in helper
+                    # helper receives flattened tensors. 
+                    # We need to pass this weight to helper.
             loss += self.helper(sim_tea, sim_stu, is_match, entropy_weight=entropy_weight)
 
+            # Explicit Negative Similarity Penalty
+            # To prevent feature collapse (high similarity everywhere), we explicitly penalize
+            # the average cosine similarity of negative pairs.
+            if self.neg_sim_weight > 0:
+                loss += self.neg_sim_weight * cos_sim_stu_neg.mean()
 
             # sim_stu_all.append(sim_stu.view(1, -1))
             # sim_tea_all.append(sim_tea.view(1, -1))
@@ -142,7 +157,13 @@ class IntraSampleLoss(nn.Module):
         #     torch.cat(is_match_all, dim=1)
         # )
         # return loss.mean()
-        return loss / len(self.cfg.pool_ks)
+        
+        final_loss = loss / len(self.cfg.pool_ks)
+        if return_entropy:
+            avg_entropy = total_entropy / len(self.cfg.pool_ks)
+            return final_loss, avg_entropy
+        else:
+            return final_loss
 
     def ranking_ce_cls_loss(self, emb_tea, emb_pos_tea, emb_stu, emb_pos_stu):
         p = torch.cat([emb_pos_tea, emb_tea])
@@ -252,15 +273,17 @@ class IntraSampleLoss(nn.Module):
             perturbed_feat_stu = gc_feat_stu + delta_stu.detach()
             perturbed_feat_pos_stu = gc_feat_pos_stu + delta_pos_stu.detach()
             
-            loss_patch = self.ranking_cos_patch_loss(
+            loss_patch, mean_entropy = self.ranking_cos_patch_loss(
                 gc_feat_tea, gc_feat_pos_tea,
-                perturbed_feat_stu, perturbed_feat_pos_stu, _keep
+                perturbed_feat_stu, perturbed_feat_pos_stu, _keep,
+                return_entropy=True
             )
             
         else:
-            loss_patch = self.ranking_cos_patch_loss(
+            loss_patch, mean_entropy = self.ranking_cos_patch_loss(
                 gc_feat_tea, gc_feat_pos_tea,
-                gc_feat_stu, gc_feat_pos_stu, _keep
+                gc_feat_stu, gc_feat_pos_stu, _keep,
+                return_entropy=True
             )
 
         losses = [
@@ -268,6 +291,11 @@ class IntraSampleLoss(nn.Module):
                 'name': 'loss_%s_patch_intra'%prefix,
                 'loss': loss_patch.mean(),
                 'weight': self.cfg.weight_patch_intra
+            },
+            {
+                'name': 'entropy_%s_patch_intra'%prefix,
+                'loss': mean_entropy,
+                'weight': 0 # Just for logging
             }
         ]
 

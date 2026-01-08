@@ -244,11 +244,16 @@ def my_app(cfg: DictConfig) -> None:
 
     key = "dataset_seg"
     log_dir = osp.join(cfg.basic.output_root, "logs")
+    checkpoint_dir = osp.join(cfg.basic.output_root, "checkpoints")
     prefix= "{}/{}".format(cfg.dataset_val[key].dataset_name, cfg.basic.experiment_name)
     cfg.full_name = prefix
-    name = '{}_date_{}'.format(prefix, datetime.now().strftime('%b%d_%H-%M-%S'))
+    
+    if cfg.basic.resume_from_checkpoint is not None:
+        name = osp.dirname(osp.relpath(cfg.basic.resume_from_checkpoint, checkpoint_dir))
+    else:
+        name = '{}_date_{}'.format(prefix, datetime.now().strftime('%b%d_%H-%M-%S'))
+
     tb_logger = TensorBoardLogger(osp.join(log_dir, name), default_hp_metric=False)
-    checkpoint_dir = osp.join(cfg.basic.output_root, "checkpoints")
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
     sys.stdout.flush()
@@ -287,7 +292,9 @@ def my_app(cfg: DictConfig) -> None:
         callbacks=[
             ModelCheckpoint(
                 dirpath=osp.join(checkpoint_dir, name),
-                every_n_train_steps=10000
+                save_top_k=-1,
+                every_n_train_steps=10000,
+                filename='epoch_{epoch}-step_{step}',
             )
         ],
         **gpu_args

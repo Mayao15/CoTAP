@@ -3,6 +3,8 @@ import sys
 import os
 import os.path as osp
 import torch.multiprocessing
+import matplotlib
+matplotlib.use('Agg') # Ensure non-interactive backend
 import torchvision
 import pytorch_lightning as pl
 import hydra
@@ -48,6 +50,18 @@ class MaimModel(pl.LightningModule):
         self.checked = False
         self.save_hyperparameters(ignore=['train_set', 'val_set', 'finetune_set', 'tester', 'loss_fn'])
         self.ema_schedule = cosine_scheduler(self.cfg.training.ema, 0.9999, self.cfg.training.max_steps + 5, 0, 1)
+
+        # Visualization Config
+        base_vis_dir = '/home/czx/temp_datasets/ImageNet2012/val/n01440764/'
+        self.vis_img_paths = [
+            os.path.join(base_vis_dir, 'ILSVRC2012_val_00000293.JPEG'),
+            os.path.join(base_vis_dir, 'ILSVRC2012_val_00002138.JPEG'),
+            os.path.join(base_vis_dir, 'ILSVRC2012_val_00003014.JPEG'),
+            os.path.join(base_vis_dir, 'ILSVRC2012_val_00006697.JPEG'),
+            os.path.join(base_vis_dir, 'ILSVRC2012_val_00007197.JPEG')
+        ]
+        # Filter out non-existent paths
+        self.vis_img_paths = [p for p in self.vis_img_paths if os.path.exists(p)]
 
     def broadcast(self, x, src):
         return self.all_gather(x)[src]
@@ -400,7 +414,84 @@ class MaimModel(pl.LightningModule):
             for metric, value in tb_metrics.items():
                 run_logger.log(metric, value)
 
+        # Online Visualization (Rank 0 only)
+        if self.global_rank == 0:
+            self.run_visualization()
+
         torch.cuda.empty_cache()
+
+    def run_visualization(self):
+        if not self.vis_img_paths:
+            return
+
+        try:
+            # Imports here to avoid circular dependencies
+            from visualize import visualize_tsne, visualize_similarity, visualize_entropy, preprocess_image
+            from einops import rearrange
+            import numpy as np
+            
+            # Construct save path
+            exp_name = self.cfg.full_name.replace('/', '_')
+            save_dir = os.path.join(self.cfg.basic.output_root, "vis_results", exp_name, f"epoch_{self.current_epoch}_step_{self.global_step}")
+            os.makedirs(save_dir, exist_ok=True)
+            
+            self.net.eval()
+            
+            total_vis_entropy = 0.0
+            num_vis_images = 0
+            
+            for img_path in self.vis_img_paths:
+                try:
+                    img_tensor, img_pil = preprocess_image(img_path, 480, device=self.device)
+                    
+                    # Use underlying model to avoid DDP synchronization deadlocks since we only run on Rank 0
+                    net_to_use = self.net
+                    if hasattr(self.net, 'module'):
+                        net_to_use = self.net.module
+
+                    with torch.no_grad():
+                        _, feats_patch = net_to_use.get_test_features(img_tensor)
+                        
+                    # Reshape logic (copied from visualize.py main)
+                    h, w = 0, 0
+                    if feats_patch.ndim == 4:
+                        features = rearrange(feats_patch, 'b d h w -> (b h w) d')
+                        h, w = feats_patch.shape[2], feats_patch.shape[3]
+                    elif feats_patch.ndim == 3:
+                        features = rearrange(feats_patch, 'b n d -> (b n) d')
+                        n = features.shape[0]
+                        h = w = int(np.sqrt(n))
+                        
+                    base_name = os.path.splitext(os.path.basename(img_path))[0]
+                    output_prefix = os.path.join(save_dir, base_name)
+                    
+                    # Run visualizations
+                    # n_clusters default 4
+                    visualize_tsne(features, img_pil, h, w, output_prefix, n_clusters=4)
+                    visualize_similarity(features, img_pil, h, w, output_prefix)
+                    mean_ent = visualize_entropy(features, output_prefix)
+                    
+                    if mean_ent is not None:
+                        total_vis_entropy += mean_ent
+                        num_vis_images += 1
+                    
+                except Exception as e:
+                    self.print(f"Error visualizing {img_path}: {e}")
+                    continue
+
+            if num_vis_images > 0:
+                avg_vis_entropy = total_vis_entropy / num_vis_images
+                # Fix deadlock: Do NOT use sync_dist=True here because only Rank 0 executes this code.
+                # Other ranks do not call this log, causing Rank 0 to wait indefinitely for sync.
+                self.log('vis/avg_entropy', avg_vis_entropy, rank_zero_only=True)
+                self.print(f"Average visualization entropy: {avg_vis_entropy:.4f}")
+
+            self.print(f"Visualization saved to {save_dir}")
+            
+        except Exception as e:
+            self.print(f"Error during visualization: {e}")
+            import traceback
+            traceback.print_exc()
 
     def on_test_epoch_start(self):
         load_checkpoint(self.net, self.cfg.basic.resume_test, self.cfg.model.vit_type)
@@ -527,11 +618,16 @@ def my_app(cfg: DictConfig) -> None:
     cfg = share_cfg(cfg)
 
     log_dir = osp.join(cfg.basic.output_root, "logs")
+    checkpoint_dir = osp.join(cfg.basic.output_root, "checkpoints")
     prefix= "{}/{}".format(cfg.dataset_train.dataset_name, cfg.basic.experiment_name)
     cfg.full_name = prefix
-    name = '{}_date_{}'.format(prefix, datetime.now().strftime('%b%d_%H-%M-%S'))
+    
+    if cfg.basic.resume_from_checkpoint is not None:
+        name = osp.dirname(osp.relpath(cfg.basic.resume_from_checkpoint, checkpoint_dir))
+    else:
+        name = '{}_date_{}'.format(prefix, datetime.now().strftime('%b%d_%H-%M-%S'))
+
     tb_logger = TensorBoardLogger(osp.join(log_dir, name), default_hp_metric=False)
-    checkpoint_dir = osp.join(cfg.basic.output_root, "checkpoints")
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
     sys.stdout.flush()
@@ -587,10 +683,9 @@ def my_app(cfg: DictConfig) -> None:
         callbacks=[
             ModelCheckpoint(
                 dirpath=osp.join(checkpoint_dir, name),
-                save_top_k=5,
+                save_top_k=-1,
                 every_n_train_steps=10000,
-                monitor="test/cocostuff27_seg/mIoU",
-                mode="max",
+                filename='epoch_{epoch}-step_{step}',
             )
         ],
         **gpu_args
