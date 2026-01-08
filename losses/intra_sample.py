@@ -30,6 +30,8 @@ class IntraSampleLoss(nn.Module):
         self.sacl_gamma = getattr(cfg, 'sacl_gamma', 0.2)
         # Weight for explicit negative similarity penalty to prevent feature collapse
         self.neg_sim_weight = getattr(cfg, 'neg_sim_weight', 1.0)
+        # Loss type: 'ap' (CoTAP default) or 'infonce' (Standard Contrastive)
+        self.loss_type = getattr(cfg, 'loss_type', 'ap')
 
     def preprocess_feats(self, feats_gc, nmb_crops):
         # nmb_crops = self.cfg.nmb_crops
@@ -121,7 +123,7 @@ class IntraSampleLoss(nn.Module):
             entropy_weight = None
             
             # Always compute entropy if requested or SACL enabled
-            if self.enable_sacl or return_entropy:
+            if self.enable_sacl or return_entropy or self.loss_type == 'infonce':
                 # Compute entropy of the teacher distribution
                 # sim_tea is [B, N_total]. 
                 # Convert cosine sim to probs for entropy calculation.
@@ -139,7 +141,24 @@ class IntraSampleLoss(nn.Module):
                     # Expand weight to match flattened size in helper
                     # helper receives flattened tensors. 
                     # We need to pass this weight to helper.
-            loss += self.helper(sim_tea, sim_stu, is_match, entropy_weight=entropy_weight)
+            
+            if self.loss_type == 'infonce':
+                # InfoNCE / Softmax Cross Entropy (Soft Distillation)
+                tau_s = getattr(self.cfg, 'tau_student', 0.1)
+                tau_t = getattr(self.cfg, 'tau_teacher', 0.04)
+                
+                with torch.no_grad():
+                    target_probs = F.softmax(sim_tea / tau_t, dim=1)
+                
+                student_log_probs = F.log_softmax(sim_stu / tau_s, dim=1)
+                loss_step = -torch.sum(target_probs * student_log_probs, dim=1)
+                
+                if entropy_weight is not None:
+                    loss_step = loss_step * entropy_weight
+                
+                loss += loss_step.mean()
+            else:
+                loss += self.helper(sim_tea, sim_stu, is_match, entropy_weight=entropy_weight)
 
             # Explicit Negative Similarity Penalty
             # To prevent feature collapse (high similarity everywhere), we explicitly penalize

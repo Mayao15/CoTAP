@@ -46,6 +46,3 @@
 - **红色**：ours(imagenet+coco)
 - **黄色**：cotap(imagenet)
 - **紫色**：ours(imagenet)
-
-1. 无法复现cotap原论文的结果
-2. 增加我们的方法后没有明显的改进，无论加不加我们的方法，也比不上dino的结果，已在尝试更换baseline
