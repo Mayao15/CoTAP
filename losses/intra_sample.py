@@ -30,8 +30,12 @@ class IntraSampleLoss(nn.Module):
         self.sacl_gamma = getattr(cfg, 'sacl_gamma', 0.2)
         # Weight for explicit negative similarity penalty to prevent feature collapse
         self.neg_sim_weight = getattr(cfg, 'neg_sim_weight', 1.0)
-        # Loss type: 'ap' (CoTAP default) or 'infonce' (Standard Contrastive)
+        # Loss type: 'ap' (CoTAP default) or 'dino' (Standard Contrastive)
         self.loss_type = getattr(cfg, 'loss_type', 'ap')
+        
+        # DINO parameters
+        self.student_temp = getattr(cfg, 'student_temp', 0.1)
+        self.teacher_temp = getattr(cfg, 'teacher_temp', 0.07) # Standard DINO teacher temp
 
     def preprocess_feats(self, feats_gc, nmb_crops):
         # nmb_crops = self.cfg.nmb_crops
@@ -123,12 +127,11 @@ class IntraSampleLoss(nn.Module):
             entropy_weight = None
             
             # Always compute entropy if requested or SACL enabled
-            if self.enable_sacl or return_entropy or self.loss_type == 'infonce':
+            if self.enable_sacl or return_entropy or self.loss_type == 'dino':
                 # Compute entropy of the teacher distribution
                 # sim_tea is [B, N_total]. 
                 # Convert cosine sim to probs for entropy calculation.
-                # Assuming tau is available in cfg, otherwise use default
-                tau = getattr(self.cfg, 'tau', 0.1)
+                tau = self.teacher_temp if self.loss_type == 'dino' else getattr(self.cfg, 'tau', 0.1)
                 probs = F.softmax(sim_tea / tau, dim=1)
                 entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=1) # [B]
                 
@@ -142,14 +145,21 @@ class IntraSampleLoss(nn.Module):
                     # helper receives flattened tensors. 
                     # We need to pass this weight to helper.
             
-            if self.loss_type == 'infonce':
-                # InfoNCE / Softmax Cross Entropy (Soft Distillation)
-                tau_s = getattr(self.cfg, 'tau_student', 0.1)
-                tau_t = getattr(self.cfg, 'tau_teacher', 0.04)
+            if self.loss_type == 'dino':
+                # DINO-style Loss / Softmax Cross Entropy (Soft Distillation)
+                # We use the similarities as logits. 
+                # Note: We do NOT use centering on the similarity distribution because
+                # the "classes" (positive and negative patches) are relative and asymmetric (Pos is always first).
+                # Centering would suppress the consistently high positive similarity which is desired here.
                 
+                tau_s = self.student_temp
+                tau_t = self.teacher_temp
+                
+                # Teacher sharpening
                 with torch.no_grad():
                     target_probs = F.softmax(sim_tea / tau_t, dim=1)
                 
+                # Student loss
                 student_log_probs = F.log_softmax(sim_stu / tau_s, dim=1)
                 loss_step = -torch.sum(target_probs * student_log_probs, dim=1)
                 
@@ -212,7 +222,7 @@ class IntraSampleLoss(nn.Module):
              # We want weight to be [B, N] (same for all N) then flattened to [1, B*N]
              b, n = targets.shape
              expanded_weight = entropy_weight.unsqueeze(1).expand(b, n).reshape(1, -1)
-        
+
         assert not targets.requires_grad and preds.requires_grad
 
         targets = targets.view(1, -1)

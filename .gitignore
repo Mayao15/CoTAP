@@ -1,24 +1,27 @@
-data/**
-checkpoints*/**
-
-.idea/
+results/
+# data
 data/
+prepare_data/
 
-note.md
-
+#checkpoints
+checkpoints*/**
 *.pth
 tmp*.py
+
+# docs
 *.pdf
 .specstory/
-prepare_data/
+.idea/
 docs/
-logs/
+note.md
+*.png
 
 # experiment outputs
 eval_results_cls/
 
 # log files
 *.log
+logs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

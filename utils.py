@@ -125,6 +125,9 @@ def rename_blocks_param_splitattn(src_state_dict, dst_state_dict):
 
 
 def load_checkpoint(model, ckpt_path, vit_type, load_teacher=False):
+    if ckpt_path is None:
+        print("Warning: ckpt_path is None, skipping checkpoint loading.")
+        return model
     state_dict = torch.load(ckpt_path, map_location="cpu")
     if "state_dict" in state_dict.keys():
         state_dict = state_dict["state_dict"]

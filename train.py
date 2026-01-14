@@ -1,13 +1,16 @@
 from genericpath import exists
 import sys
+import shutil
 import os
 import os.path as osp
 import torch.multiprocessing
+import torch.nn.functional as F
 import matplotlib
 matplotlib.use('Agg') # Ensure non-interactive backend
 import torchvision
 import pytorch_lightning as pl
 import hydra
+import hydra.utils
 import random
 import warnings
 warnings.filterwarnings("ignore")
@@ -327,6 +330,47 @@ class MaimModel(pl.LightningModule):
                 self.log('loss/%s'%i['name'], i['loss'], **log_args)
         self.log('loss/total', total_loss, **log_args)
 
+        # Monitor Alignment and Uniformity (Wang & Isola, 2020)
+        # Using CLS token features for stability and global representation quality
+        if 'cls_%d'%head_idx_cls in outputs_stu:
+            feat_cls = outputs_stu['cls_%d'%head_idx_cls].detach().float()
+            # Normalize to hypersphere
+            feat_cls = F.normalize(feat_cls, dim=1)
+            
+            # Split into two views (assumes batch is constructed as [view1; view2])
+            # The current merge_input logic concatenates [crops_view1, crops_view2]
+            # So if we have N crops total, first N/2 are view1, next N/2 are view2 (of same images? check merge_input)
+            
+            # In merge_input: 
+            # torch.cat([tr(batch...[i]), tr(batch...pos[i])])
+            # The first half corresponds to view1, second half to view2 (positive pair)
+            
+            b_full = feat_cls.shape[0]
+            if b_full % 2 == 0:
+                b = b_full // 2
+                x = feat_cls[:b]
+                y = feat_cls[b:]
+                
+                # Alignment: Expected distance between positive pairs
+                align_loss = (x - y).norm(p=2, dim=1).pow(2).mean()
+                self.log('monitor/alignment', align_loss, **log_args)
+                
+                # Uniformity: Expected pairwise potential
+                # We use only x to save computation and avoid dependency between pos pairs
+                # Subsample if batch is too large to avoid O(N^2) memory
+                if b > 512:
+                    idx = torch.randperm(b)[:512]
+                    x_unif = x[idx]
+                else:
+                    x_unif = x
+                
+                # pdist calculates pairwise euclidean distance
+                # We need ||x_i - x_j||^2
+                dist_sq = torch.pdist(x_unif, p=2).pow(2)
+                # Uniformity = log mean(exp(-2 * dist_sq))
+                unif_loss = torch.log(torch.mean(torch.exp(-2 * dist_sq)))
+                self.log('monitor/uniformity', unif_loss, **log_args)
+
         if self.global_step % 10000 == 0 and self.global_step > 0:
             self.print("RESETTING TFEVENT FILE")
             self.logger.experiment.close()
@@ -628,6 +672,14 @@ def my_app(cfg: DictConfig) -> None:
         name = '{}_date_{}'.format(prefix, datetime.now().strftime('%b%d_%H-%M-%S'))
 
     tb_logger = TensorBoardLogger(osp.join(log_dir, name), default_hp_metric=False)
+
+    if os.environ.get("LOCAL_RANK", "0") == "0":
+        src_losses = osp.join(hydra.utils.get_original_cwd(), "losses")
+        dst_losses = osp.join(tb_logger.log_dir, "losses")
+        os.makedirs(tb_logger.log_dir, exist_ok=True)
+        if osp.exists(src_losses) and not osp.exists(dst_losses):
+            shutil.copytree(src_losses, dst_losses)
+
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
     sys.stdout.flush()
@@ -686,6 +738,7 @@ def my_app(cfg: DictConfig) -> None:
                 save_top_k=-1,
                 every_n_train_steps=10000,
                 filename='epoch_{epoch}-step_{step}',
+                auto_insert_metric_name=False,
             )
         ],
         **gpu_args

@@ -38,6 +38,10 @@ intrasample:
   enable_sacl: False
   sacl_rho: 0.05
   sacl_gamma: 0.2
+  loss_type: ap
+  student_temp: 0.1
+  teacher_temp: 0.04
+  neg_sim_weight: 1.0
 
 entropy_max:
   name: EntropyMax
