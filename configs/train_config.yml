@@ -33,7 +33,8 @@ training:
   num_neighbors_chosen: 1
   use_mask: False
   merge_step_ratio: 0.5
-
+  accumulate_grad_batches: 1
+  
 hydra:
   run:
     dir: "."

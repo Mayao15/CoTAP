@@ -1,0 +1,29 @@
+#!/bin/bash
+
+torchrun --nproc_per_node=8 train.py \
+loss_fn=full_loss training.num_gpus=8 dataset_train=coco+in1k training.batch_size=16 training.use_mask=False training.max_steps=240000 training.lr=3e-5 \
+model=vit_small_14 \
+model.n_projection_head=2 model.nmb_prototypes=[512,4096] \
+basic.experiment_name="vits14/dinov2+sa" \
+model.vit_type='depth' \
+model.selective_layer_start=11 \
+model.init_values=1.0e-05 \
+model.selective_cache_num=64 \
+model.selective_kernel_size=3 \
+model.dim=768 \
+training.ema=0.9997 \
+loss_fn.innersample.weight_patch_inner=1 \
+loss_fn.innersample.weight_cls_inner=1 \
+loss_fn.intrasample.weight_patch_intra=1 \
+loss_fn.intrasample.weight_cls_intra=1 \
+loss_fn.intrasample.loss_type=dino \
+loss_fn.intrasample.neg_sim_weight=0.0 \
+loss_fn.intrasample.enable_sacl=True \
+loss_fn.intrasample.sacl_rho=0.03 \
+loss_fn.intrasample.sacl_gamma=0.2 \
+loss_fn.share.applied_subset_cls=0 \
+loss_fn.share.applied_subset_patch=0 \
+dataset_train.size_crops=[224,98] \
+training.accumulate_grad_batches=2 \
+model.pretrained_weights='./checkpoints/competitor/vits14/dinov2.ckpt'
+wait

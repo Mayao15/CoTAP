@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import time
+import math
 
 from utils import *
 
@@ -37,6 +38,8 @@ class DinoFeaturizer(nn.Module):
 
         if arch == "vit_small" and patch_size == 16:
             url = "dino/dino_deitsmall16_pretrain/dino_deitsmall16_pretrain.pth"
+        elif arch == "vit_small" and patch_size == 14:
+            url = "dinov2/dinov2_vits14/dinov2_vits14_pretrain.pth"
         elif arch == "vit_small" and patch_size == 8:
             url = "dino/dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth"
         elif arch == "vit_base" and patch_size == 16:
@@ -46,6 +49,7 @@ class DinoFeaturizer(nn.Module):
         else:
             raise ValueError("Unknown arch and patch size")
 
+        # DINOv2 uses a different init signature than standard ViT
         self.model = vits.__dict__[arch](
             patch_size=patch_size,
             drop_rate=cfg.drop_rate,
@@ -65,7 +69,9 @@ class DinoFeaturizer(nn.Module):
             selective_cache_num=cfg.selective_cache_num,
             selective_kernel_size=cfg.selective_kernel_size,
             feat_type_default=cfg.feat_type_default,
+            init_values=getattr(cfg, 'init_values', None),
         )
+            
         if not require_grad:
             for p in self.model.parameters():
                 p.requires_grad = False
@@ -89,7 +95,46 @@ class DinoFeaturizer(nn.Module):
                 state_dict = torch.hub.load_state_dict_from_url(
                     url="https://dl.fbaipublicfiles.com/" + url, map_location='cpu')
                 state_dict = {k: v for k, v in state_dict.items() if not k.startswith('model.projection_heads')}
-                state_dict = rename_blocks_param(state_dict, self.model.state_dict(), vit_type)
+                
+                # Resize pos_embed if needed (e.g. DINOv2 518x518 -> 224x224)
+                if 'pos_embed' in state_dict:
+                    pos_embed_old = state_dict['pos_embed']
+                    pos_embed_new = self.model.pos_embed
+                    if pos_embed_old.shape != pos_embed_new.shape:
+                        print(f"Resizing pos_embed from {pos_embed_old.shape} to {pos_embed_new.shape}")
+                        
+                        # Handle potential registers (DINOv2 with registers has them after CLS)
+                        # But standard DINOv2 pretrain (vits14) has no registers.
+                        # Assuming [CLS, PatchTokens...] structure.
+                        num_extra_tokens = 1 # CLS token
+                        
+                        # Check if old and new have same embedding dim
+                        if pos_embed_old.shape[-1] != pos_embed_new.shape[-1]:
+                            print("Warning: Embedding dimension mismatch in pos_embed!")
+                        
+                        cls_tok = pos_embed_old[:, :num_extra_tokens]
+                        pos_tokens = pos_embed_old[:, num_extra_tokens:]
+                        
+                        N_old = pos_tokens.shape[1]
+                        N_new = pos_embed_new.shape[1] - num_extra_tokens
+                        
+                        gs_old = int(math.sqrt(N_old))
+                        gs_new = int(math.sqrt(N_new))
+                        
+                        if gs_old * gs_old != N_old:
+                             print(f"Error: Old pos_embed patch count {N_old} is not a perfect square.")
+                        
+                        pos_tokens = pos_tokens.reshape(1, gs_old, gs_old, -1).permute(0, 3, 1, 2)
+                        pos_tokens = F.interpolate(pos_tokens, size=(gs_new, gs_new), mode='bicubic', align_corners=False)
+                        pos_tokens = pos_tokens.permute(0, 2, 3, 1).reshape(1, N_new, -1)
+                        
+                        state_dict['pos_embed'] = torch.cat((cls_tok, pos_tokens), dim=1)
+                
+                # Handle keys mismatch between DINOv2 and expected keys
+                # DINOv2: blocks.0.attn.qkv.weight
+                # Expected (maybe): blocks.0.attn.qkv.weight (seems matching)
+                # But check for other differences
+                
                 msg = self.model.load_state_dict(state_dict, strict=False)
                 print(msg)
 
@@ -207,4 +252,3 @@ class ResNet(nn.Module):
 
 def print_tensor(x, name=''):
     print('%s: '%name, x.shape, x.max().item(), x.min().item(), x.mean().item(), x.median().view(-1).item(), x.dtype)
-

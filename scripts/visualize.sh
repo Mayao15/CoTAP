@@ -1,0 +1,1 @@
+python visualize.py --img_path /home/czx/temp_datasets/ImageNet2012/val/n01440764/ILSVRC2012_val_00002138.JPEG --ckpt_path checkpoints/competitor/vits16/dino.ckpt

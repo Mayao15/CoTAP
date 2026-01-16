@@ -1,4 +1,10 @@
 results/
+# temp files
+temp*
+test*
+analysis/
+tmp*.py
+
 # data
 data/
 prepare_data/
@@ -6,7 +12,6 @@ prepare_data/
 #checkpoints
 checkpoints*/**
 *.pth
-tmp*.py
 
 # docs
 *.pdf

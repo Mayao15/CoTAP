@@ -312,23 +312,29 @@ class MaimModel(pl.LightningModule):
             pl_module=self
         )
 
-        net_optim.zero_grad()
+        # Gradient accumulation
+        acc_steps = getattr(self.cfg.training, 'accumulate_grad_batches', 1)
+        total_loss = total_loss / acc_steps
         self.manual_backward(total_loss)
 
-        net_optim.step()
+        if (batch_idx + 1) % acc_steps == 0:
+            net_optim.step()
+            net_optim.zero_grad()
+            
+            # Update LR and EMA only on step
+            self.lr_scheduler.step()
+            self.net_teacher.ema_update(self.net, self.ema_schedule[self.global_step])
 
-        self.lr_scheduler.step()
-        self.net_teacher.ema_update(self.net, self.ema_schedule[self.global_step])
-
-        for i, param_group in enumerate(net_optim.param_groups):
-            if i == 0 or i == 2:
-                param_group["weight_decay"] = self.wd_schedule[self.global_step]
+            for i, param_group in enumerate(net_optim.param_groups):
+                if i == 0 or i == 2:
+                    param_group["weight_decay"] = self.wd_schedule[self.global_step]
 
         self.log('loss/lr', self.lr_scheduler.get_last_lr()[0], **log_args)
         for i in losses:
             if 'loss' in i.keys():
                 self.log('loss/%s'%i['name'], i['loss'], **log_args)
-        self.log('loss/total', total_loss, **log_args)
+        # Log the actual total loss (scaled back up for logging)
+        self.log('loss/total', total_loss * acc_steps, **log_args)
 
         # Monitor Alignment and Uniformity (Wang & Isola, 2020)
         # Using CLS token features for stability and global representation quality

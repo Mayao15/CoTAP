@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.multiprocessing
 import wget
+import math
 
 from os.path import join
 from torch._six import string_classes
@@ -135,17 +136,25 @@ def load_checkpoint(model, ckpt_path, vit_type, load_teacher=False):
     if "teacher" in state_dict.keys():
         state_dict = state_dict["teacher"]
 
-    remove_prefix = ['net_teacher', 'teacher', 'model_tea']
-    change_prefix = ['net', 'model', 'backbone']
-    if load_teacher:
-        remove_prefix[0] = 'net'
-        change_prefix[0] = 'net_teacher'
-
-    for rp in remove_prefix:
-        state_dict = {k: v for k, v in state_dict.items() if not k.startswith(rp + '.')}
-
-    for cp in change_prefix:
-        state_dict = {k.replace(cp + '.', ''): v for k, v in state_dict.items()}
+    # DINOv2 keys are already clean, no prefix removal needed usually
+    # But check if we need to remove specific prefixes
+    
+    if vit_type == "dinov2":
+        # DINOv2 checkpoint might be clean or have 'module.' if saved from DDP
+        # Based on your inspection, it seems clean: ['cls_token', 'pos_embed', ...]
+        pass
+    else:
+        remove_prefix = ['net_teacher', 'teacher', 'model_tea']
+        change_prefix = ['net', 'model', 'backbone']
+        if load_teacher:
+            remove_prefix[0] = 'net'
+            change_prefix[0] = 'net_teacher'
+    
+        for rp in remove_prefix:
+            state_dict = {k: v for k, v in state_dict.items() if not k.startswith(rp + '.')}
+    
+        for cp in change_prefix:
+            state_dict = {k.replace(cp + '.', ''): v for k, v in state_dict.items()}
 
     # state_dict = {k.replace("net.", ""): v for k, v in state_dict.items()}
     # state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
@@ -154,7 +163,45 @@ def load_checkpoint(model, ckpt_path, vit_type, load_teacher=False):
     # state_dict = {k: v for k, v in state_dict.items() if not k.startswith('model_tea.')}
     # state_dict = {k: v for k, v in state_dict.items() if not k.startswith('model.projection_heads')}
 
-    state_dict = rename_blocks_param(state_dict, model.model.state_dict(), vit_type)
+    if vit_type != "dinov2":
+        state_dict = rename_blocks_param(state_dict, model.model.state_dict(), vit_type)
+        
+    # Resize pos_embed for DINOv2 if shape mismatch
+    if 'pos_embed' in state_dict and model.model.pos_embed.shape != state_dict['pos_embed'].shape:
+        print(f"Resizing pos_embed from {state_dict['pos_embed'].shape} to {model.model.pos_embed.shape}")
+        pos_embed_old = state_dict['pos_embed']
+        pos_embed_new = model.model.pos_embed
+        
+        # Determine number of extra tokens (CLS, registers, etc.)
+        # DINOv2 pretrained usually has 1 CLS token (vits14) or CLS + 4 registers (vits14_reg)
+        # But here target model has 257 tokens (1 CLS + 256 patches)
+        # Source checkpoint has 1370 tokens (1 CLS + 1369 patches -> 37x37 patches -> 518x518 img)
+        
+        # Assuming CLS token is at index 0 and registers (if any) follow.
+        # But standard vits14 pretrain only has CLS.
+        num_extra_tokens = 1 
+        
+        # If registers are present in checkpoint but not in model, or vice-versa, we need to handle that.
+        # For now, assume simple resize of patch tokens.
+        
+        cls_tok = pos_embed_old[:, :num_extra_tokens]
+        pos_tokens = pos_embed_old[:, num_extra_tokens:]
+        
+        N_old = pos_tokens.shape[1]
+        N_new = pos_embed_new.shape[1] - num_extra_tokens
+        
+        gs_old = int(math.sqrt(N_old))
+        gs_new = int(math.sqrt(N_new))
+        
+        if gs_old * gs_old != N_old:
+             print(f"Warning: Old pos_embed patch count {N_old} is not a perfect square. Interpolation might be wrong.")
+        
+        pos_tokens = pos_tokens.reshape(1, gs_old, gs_old, -1).permute(0, 3, 1, 2)
+        pos_tokens = F.interpolate(pos_tokens, size=(gs_new, gs_new), mode='bicubic', align_corners=False)
+        pos_tokens = pos_tokens.permute(0, 2, 3, 1).reshape(1, N_new, -1)
+        
+        state_dict['pos_embed'] = torch.cat((cls_tok, pos_tokens), dim=1)
+
     msg = model.model.load_state_dict(state_dict, strict=False)
     print('\nPretrained weights found at {} and loaded with msg: {}'.format(ckpt_path, msg))
     return model
