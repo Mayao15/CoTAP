@@ -2,15 +2,14 @@ dataset_seg:
   pytorch_data_dir: './data'
   lmdb_path: ~ #'./data/lmdb'
   tester_path: ~
-  prefix: 'cocostuff27'
-  dataset_name: "cocostuff27"
+  prefix: 'coco'
+  dataset_name: "coco"
   has_labels: False
   num_neighbors: 7
   n_classes: 27
   ignore_classes: []
   crop_type: ~ #"five"
   head: 'linear'
-  subset: 'full'
   ft_res: 336
   res: 448
   target_res: 448

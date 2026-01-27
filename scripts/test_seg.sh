@@ -1,14 +1,14 @@
 #!/bin/bash
 
 devices=(0,1,2,3,4,5,6,7)
-evaluate_group="cocostuff27_fcn" # voc_linear voc_fcn cocostuff27_linear cocostuff27_fcn cityscapes_linear cityscapes_fcn ade20k_linear ade20k_fcn 
+evaluate_group="cocostuff27_linear" # voc_linear voc_fcn cocostuff27_linear cocostuff27_fcn cityscapes_linear cityscapes_fcn ade20k_linear ade20k_fcn 
 
 lrs=('3e-3')
 
-model=('coco+imagenet1k/vits16/dino+sa_date_Jan07_18-01-07/epoch_47-step_240000'
+model=('cotap/dino+cotap'
 )
 
-save_name=('dino+sa_1' \
+save_name=('cotap' \
 )
 
 n_devices=${#devices[@]}

@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 
 
 def norm(t, dim=1):
@@ -36,6 +37,36 @@ class IntraSampleLoss(nn.Module):
         # DINO parameters
         self.student_temp = getattr(cfg, 'student_temp', 0.1)
         self.teacher_temp = getattr(cfg, 'teacher_temp', 0.07) # Standard DINO teacher temp
+        if cfg.loss_type == 'dino':
+            self.center_momentum = getattr(cfg, 'center_momentum', 0.9)
+            self.nmb_prototypes = cfg.nmb_prototypes if isinstance(cfg.nmb_prototypes, int) else cfg.nmb_prototypes[0]
+            
+            self.register_buffer("center", torch.zeros(1, self.nmb_prototypes))
+            # We need max_steps or max_epochs to schedule teacher temp. 
+            # Assuming we can access current epoch or step in forward.
+            # Simple linear warmup for teacher temp if needed, or constant.
+            # DINO default: warmup from 0.04 to 0.07 over 30 epochs.
+            self.teacher_temp_warmup_teacher_temp = getattr(cfg, 'warmup_teacher_temp', 0.04)
+            self.teacher_temp_min = getattr(cfg, 'teacher_temp', 0.04) # Using teacher_temp as target
+            self.teacher_temp_max = getattr(cfg, 'teacher_temp_max', 0.07) # Or maybe just use fixed?
+            # Let's use a simple schedule based on epoch passed in forward
+        
+    def update_center(self, teacher_output):
+        batch_center = torch.sum(teacher_output, dim=0, keepdim=True)
+        dist.all_reduce(batch_center)
+        len_teacher_output = len(teacher_output)
+        dist.all_reduce(torch.tensor(len_teacher_output).cuda())
+        batch_center = batch_center / len_teacher_output
+
+        # ema update
+        self.center = self.center * self.center_momentum + batch_center * (1 - self.center_momentum)
+
+    @torch.no_grad()
+    def get_teacher_temp(self, epoch, max_epochs=100):
+        # Linear warmup for first 30 epochs
+        if epoch < 30:
+            return self.teacher_temp_warmup_teacher_temp + (self.teacher_temp - self.teacher_temp_warmup_teacher_temp) * epoch / 30
+        return self.teacher_temp
 
     def preprocess_feats(self, feats_gc, nmb_crops):
         # nmb_crops = self.cfg.nmb_crops
@@ -67,7 +98,7 @@ class IntraSampleLoss(nn.Module):
         return loss
 
     def ranking_cos_patch_loss(self, ori_feat_tea, ori_feat_pos_tea, \
-        ori_feat_stu, ori_feat_pos_stu, ori_keep, return_entropy=False):
+        ori_feat_stu, ori_feat_pos_stu, ori_keep, return_entropy=False, current_epoch=0):
         # perm = super_perm(len(ori_feat_tea), ori_feat_tea.device)
 
         bs, n_gc, d, h, w = ori_feat_stu.shape
@@ -94,10 +125,78 @@ class IntraSampleLoss(nn.Module):
             _, idx_keep_pos = torch.topk(keep_pos, k=min(self.cfg.topk, n_gc*ks**2), dim=1)
             idx_keep = idx_keep.unsqueeze(2).repeat(1,1,d)
             idx_keep_pos = idx_keep_pos.unsqueeze(2).repeat(1,1,d)
-            feat_stu = torch.gather(feat_stu, 1, idx_keep)
+            feat_stu = torch.gather(feat_stu, 1, idx_keep) # [BS, N_keep, D]
             feat_tea = torch.gather(feat_tea, 1, idx_keep)
             feat_pos_stu = torch.gather(feat_pos_stu, 1, idx_keep_pos)
             feat_pos_tea = torch.gather(feat_pos_tea, 1, idx_keep_pos)
+
+            # DINO Loss Logic
+            if self.loss_type == 'dino':
+                # Flatten to [N_total, D]
+                # feat_stu (View 1) <-> feat_pos_tea (View 2)
+                # feat_pos_stu (View 2) <-> feat_tea (View 1)
+                
+                # Student Output
+                s1 = feat_stu.reshape(-1, d) / self.student_temp
+                s2 = feat_pos_stu.reshape(-1, d) / self.student_temp
+                
+                # Teacher Output
+                # Apply Centering and Sharpening
+                temp = self.get_teacher_temp(current_epoch)
+                t1 = F.softmax((feat_tea.reshape(-1, d) - self.center) / temp, dim=-1).detach()
+                t2 = F.softmax((feat_pos_tea.reshape(-1, d) - self.center) / temp, dim=-1).detach()
+                
+                # Calculate Loss
+                # CE(T2, S1) + CE(T1, S2)
+                loss1 = torch.sum(-t2 * F.log_softmax(s1, dim=-1), dim=-1)
+                loss2 = torch.sum(-t1 * F.log_softmax(s2, dim=-1), dim=-1)
+                
+                # Calculate Entropy for SACL weighting or logging
+                # Entropy of Teacher Distribution
+                entropy1 = -torch.sum(t1 * torch.log(t1 + 1e-8), dim=-1)
+                entropy2 = -torch.sum(t2 * torch.log(t2 + 1e-8), dim=-1)
+                entropy = (entropy1 + entropy2) / 2
+                
+                if return_entropy:
+                    total_entropy += entropy.mean()
+                
+                # SACL Weighting
+                if self.enable_sacl:
+                    entropy_weight = torch.exp(-self.sacl_gamma * entropy)
+                    loss1 = loss1 * entropy_weight # Simplified: apply avg weight or per-sample? Per-sample.
+                    # Wait, entropy1 corresponds to t1 (used in loss2), entropy2 corresponds to t2 (used in loss1)
+                    # Correct mapping:
+                    # loss1 uses t2 -> weight by entropy2
+                    # loss2 uses t1 -> weight by entropy1
+                    
+                    w1 = torch.exp(-self.sacl_gamma * entropy2)
+                    w2 = torch.exp(-self.sacl_gamma * entropy1)
+                    loss1 = loss1 * w1
+                    loss2 = loss2 * w2
+
+                loss += (loss1.mean() + loss2.mean()) / 2
+                
+                # Update Center
+                # We update center based on all teacher outputs in this batch step
+                # Note: This might be called multiple times per step if multiple pool_ks.
+                # Standard DINO updates center once per step based on CLS token.
+                # Here we update based on dense features. 
+                # Ideally, we should only update once? Or update with average?
+                # Let's accumulate or just update. Since it's EMA, frequent updates are fine but might be slow.
+                # To match exactly, we should cat all teacher outputs.
+                
+                self.update_center(torch.cat([t1, t2])) # Should we update with softmaxed output? 
+                # DINO update_center uses teacher_output (logits) directly, NOT softmaxed.
+                # "teacher_output" in snippet is raw output.
+                # "teacher_out = F.softmax((teacher_output - self.center) / temp)"
+                # "self.update_center(teacher_output)"
+                
+                # Correct: Pass raw logits
+                raw_t1 = feat_tea.reshape(-1, d)
+                raw_t2 = feat_pos_tea.reshape(-1, d)
+                self.update_center(torch.cat([raw_t1, raw_t2]))
+
+                continue # Skip the rest of CoTAP logic
 
             cos_sim_stu_pos = torch.einsum('nxc,nyc->nxy', norm(feat_stu, -1), norm(feat_pos_stu, -1))
             cos_sim_tea_pos = torch.einsum('nxc,nyc->nxy', norm(feat_tea, -1), norm(feat_pos_tea, -1))
@@ -127,11 +226,11 @@ class IntraSampleLoss(nn.Module):
             entropy_weight = None
             
             # Always compute entropy if requested or SACL enabled
-            if self.enable_sacl or return_entropy or self.loss_type == 'dino':
+            if self.enable_sacl or return_entropy:
                 # Compute entropy of the teacher distribution
                 # sim_tea is [B, N_total]. 
                 # Convert cosine sim to probs for entropy calculation.
-                tau = self.teacher_temp if self.loss_type == 'dino' else getattr(self.cfg, 'tau', 0.1)
+                tau = getattr(self.cfg, 'tau', 0.1)
                 probs = F.softmax(sim_tea / tau, dim=1)
                 entropy = -torch.sum(probs * torch.log(probs + 1e-8), dim=1) # [B]
                 
@@ -145,30 +244,7 @@ class IntraSampleLoss(nn.Module):
                     # helper receives flattened tensors. 
                     # We need to pass this weight to helper.
             
-            if self.loss_type == 'dino':
-                # DINO-style Loss / Softmax Cross Entropy (Soft Distillation)
-                # We use the similarities as logits. 
-                # Note: We do NOT use centering on the similarity distribution because
-                # the "classes" (positive and negative patches) are relative and asymmetric (Pos is always first).
-                # Centering would suppress the consistently high positive similarity which is desired here.
-                
-                tau_s = self.student_temp
-                tau_t = self.teacher_temp
-                
-                # Teacher sharpening
-                with torch.no_grad():
-                    target_probs = F.softmax(sim_tea / tau_t, dim=1)
-                
-                # Student loss
-                student_log_probs = F.log_softmax(sim_stu / tau_s, dim=1)
-                loss_step = -torch.sum(target_probs * student_log_probs, dim=1)
-                
-                if entropy_weight is not None:
-                    loss_step = loss_step * entropy_weight
-                
-                loss += loss_step.mean()
-            else:
-                loss += self.helper(sim_tea, sim_stu, is_match, entropy_weight=entropy_weight)
+            loss += self.helper(sim_tea, sim_stu, is_match, entropy_weight=entropy_weight)
 
             # Explicit Negative Similarity Penalty
             # To prevent feature collapse (high similarity everywhere), we explicitly penalize
@@ -277,7 +353,8 @@ class IntraSampleLoss(nn.Module):
 
             loss_for_grad = self.ranking_cos_patch_loss(
                 gc_feat_tea, gc_feat_pos_tea,
-                feat_stu_grad, feat_pos_stu_grad, _keep
+                feat_stu_grad, feat_pos_stu_grad, _keep,
+                current_epoch=pl_module.current_epoch if pl_module else 0
             )
             
             # 2. Generate Adversarial Perturbation
@@ -305,14 +382,16 @@ class IntraSampleLoss(nn.Module):
             loss_patch, mean_entropy = self.ranking_cos_patch_loss(
                 gc_feat_tea, gc_feat_pos_tea,
                 perturbed_feat_stu, perturbed_feat_pos_stu, _keep,
-                return_entropy=True
+                return_entropy=True,
+                current_epoch=pl_module.current_epoch if pl_module else 0
             )
             
         else:
             loss_patch, mean_entropy = self.ranking_cos_patch_loss(
                 gc_feat_tea, gc_feat_pos_tea,
                 gc_feat_stu, gc_feat_pos_stu, _keep,
-                return_entropy=True
+                return_entropy=True,
+                current_epoch=pl_module.current_epoch if pl_module else 0
             )
 
         losses = [

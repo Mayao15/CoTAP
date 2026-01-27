@@ -42,6 +42,8 @@ class COCO(Dataset):
             self.image_list = "Coco164kFew_Stuff_6.txt"
         elif self.subset == 7:  # IIC Fine
             self.image_list = "Coco164kFull_Stuff_Coarse_7.txt"
+        elif self.subset == 'full':
+            self.image_list = None
 
         assert self.split in ["train", "val", "train+val"]
         split_dirs = {
@@ -61,12 +63,17 @@ class COCO(Dataset):
                         self.label_files.append(osp.join(self.root, "annotations", split_dir, img_id + ".png"))
         else:
             self.image_files = []
-            self.label_files = None
+            if self.subset == 'full':
+                self.label_files = []
+            else:
+                self.label_files = None
             for split_dir in split_dirs[self.split]:
                 img_ids = os.listdir(osp.join(self.root, "images", split_dir))
-                img_ids = sorted(img_ids)
+                img_ids = sorted([x for x in img_ids if x.endswith('.jpg')])
                 for img_id in img_ids:
                     self.image_files.append(osp.join(self.root, "images", split_dir, img_id))
+                    if self.subset == 'full':
+                        self.label_files.append(osp.join(self.root, "annotations", split_dir, img_id.replace('.jpg', '.png')))
 
         self.fine_to_coarse = {0: 9, 1: 11, 2: 11, 3: 11, 4: 11, 5: 11, 6: 11, 7: 11, 8: 11, 9: 8, 10: 8, 11: 8, 12: 8,
                                13: 8, 14: 8, 15: 7, 16: 7, 17: 7, 18: 7, 19: 7, 20: 7, 21: 7, 22: 7, 23: 7, 24: 7,
@@ -128,7 +135,7 @@ class COCO(Dataset):
         img = self.transform(img)
         label = self.label_transform(label).squeeze(0)
         # label[label == 255] = -1  # to be consistent with 10k
-        coarse_label = torch.zeros_like(label)
+        coarse_label = torch.ones_like(label) * 255
         for fine, coarse in self.fine_to_coarse.items():
             coarse_label[label == fine] = coarse
         coarse_label[label == 255] = 255

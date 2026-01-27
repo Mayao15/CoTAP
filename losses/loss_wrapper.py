@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
+from torch import distributed as dist
 from .identity import IdentityLoss
 from .inner_sample import InnerSampleLoss
 from .intra_sample import IntraSampleLoss
@@ -167,29 +168,55 @@ class LossWrapper(nn.Module):
             # print_tensor(Q, 'Q')
 
             sum_Q = torch.sum(Q)
-            pl_module.reduce(sum_Q)
+            if pl_module is not None:
+                sum_Q = pl_module.reduce(sum_Q)
             Q /= sum_Q
 
             u = torch.zeros(Q.shape[0], device=device)
             r = torch.ones(Q.shape[0], device=device) / Q.shape[0]
-            c = torch.ones(Q.shape[1], device=device) / (pl_module.world_size() * Q.shape[1])
+            world_size = pl_module.world_size() if pl_module is not None else 1
+            c = torch.ones(Q.shape[1], device=device) / (world_size * Q.shape[1])
 
             curr_sum = torch.sum(Q, dim=1)
-            pl_module.reduce(curr_sum)
+            if pl_module is not None:
+                curr_sum = pl_module.reduce(curr_sum)
 
             for it in range(nmb_iters):
                 u = curr_sum
                 Q *= (r / u).unsqueeze(1)
                 Q *= (c / torch.sum(Q, dim=0)).unsqueeze(0)
                 curr_sum = torch.sum(Q, dim=1)
-                pl_module.reduce(curr_sum)
+                if pl_module is not None:
+                    curr_sum = pl_module.reduce(curr_sum)
 
             prob = (Q / torch.sum(Q, dim=0, keepdim=True)).float()
             prob = prob.t()
 
         return prob
 
+    def distributed_sinkhorn(self, Q: torch.Tensor, nmb_iters: int) -> torch.Tensor:
+        with torch.no_grad():
+            sum_Q = torch.sum(Q)
+            dist.all_reduce(sum_Q)
+            Q /= sum_Q
+            device = Q.device
+            world_size = dist.get_world_size() if dist.is_initialized() else 1
 
+            u = torch.zeros(Q.shape[0], device=device)
+            r = torch.ones(Q.shape[0], device=device) / Q.shape[0]
+            c = torch.ones(Q.shape[1], device=device) / (world_size * Q.shape[1])
+
+            curr_sum = torch.sum(Q, dim=1)
+            dist.all_reduce(curr_sum)
+
+            for it in range(nmb_iters):
+                u = curr_sum
+                Q *= (r / u).unsqueeze(1)
+                Q *= (c / torch.sum(Q, dim=0)).unsqueeze(0)
+                curr_sum = torch.sum(Q, dim=1)
+                dist.all_reduce(curr_sum)
+            return (Q / torch.sum(Q, dim=0, keepdim=True)).t().float()
+            
 class MemoryBankPatch(nn.Module):
     def __init__(self, cfg, kernel_size=1):
         super(MemoryBankPatch, self).__init__()

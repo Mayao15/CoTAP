@@ -137,9 +137,12 @@ class DataWrapper(Dataset):
             elif dataset_name == "cocostuff27":
                 self.n_classes = 27
                 dataset_class = COCO
-                extra_args.update(dict(random_crop_res=self.random_crop_res, coarse_labels=False, subset=0, exclude_things=False))
-                if self.image_set == "val":
+                subset = self.cfg.get('subset', 0)
+                if self.image_set == "val" and subset == 0:
                     extra_args["subset"] = 7
+                else:
+                    extra_args["subset"] = subset
+                extra_args.update(dict(random_crop_res=self.random_crop_res, coarse_labels=False, exclude_things=False))
             elif dataset_name == "coco":
                 self.n_classes = 27
                 dataset_class = COCO

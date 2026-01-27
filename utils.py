@@ -146,15 +146,15 @@ def load_checkpoint(model, ckpt_path, vit_type, load_teacher=False):
     else:
         remove_prefix = ['net_teacher', 'teacher', 'model_tea']
         change_prefix = ['net', 'model', 'backbone']
-        if load_teacher:
-            remove_prefix[0] = 'net'
-            change_prefix[0] = 'net_teacher'
-    
-        for rp in remove_prefix:
-            state_dict = {k: v for k, v in state_dict.items() if not k.startswith(rp + '.')}
-    
-        for cp in change_prefix:
-            state_dict = {k.replace(cp + '.', ''): v for k, v in state_dict.items()}
+    if load_teacher:
+        remove_prefix[0] = 'net'
+        change_prefix[0] = 'net_teacher'
+
+    for rp in remove_prefix:
+        state_dict = {k: v for k, v in state_dict.items() if not k.startswith(rp + '.')}
+
+    for cp in change_prefix:
+        state_dict = {k.replace(cp + '.', ''): v for k, v in state_dict.items()}
 
     # state_dict = {k.replace("net.", ""): v for k, v in state_dict.items()}
     # state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
