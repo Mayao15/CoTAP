@@ -43,6 +43,11 @@ intrasample:
   teacher_temp: 0.04
   neg_sim_weight: 1.0
 
+spatial_regularization:
+  name: SpatialRegularization
+  weight: 0.01
+  reduction: mean
+
 # entropy_max:
 #   name: EntropyMax
 #   temperature: 0.1

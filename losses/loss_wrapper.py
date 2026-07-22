@@ -6,6 +6,7 @@ from .identity import IdentityLoss
 from .inner_sample import InnerSampleLoss
 from .intra_sample import IntraSampleLoss
 from .kernel_align import KernelAlignLoss, EntropyMaxLoss
+from .spatial_regularization import SpatialRegularizationLoss
 
 
 class LossWrapper(nn.Module):
@@ -19,7 +20,8 @@ class LossWrapper(nn.Module):
             'InnerSample': InnerSampleLoss,
             'IntraSample': IntraSampleLoss,
             'KernelAlign': KernelAlignLoss,
-            'EntropyMax': EntropyMaxLoss
+            'EntropyMax': EntropyMaxLoss,
+            'SpatialRegularization': SpatialRegularizationLoss,
         }
         self.loss_fn = []
         for k in cfg.keys():

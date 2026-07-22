@@ -48,6 +48,12 @@ entropy_max:
   temperature: 0.1
   weight: 1
 
+# Activated automatically when model.feature_regularization=total_variation.
+spatial_regularization:
+  name: SpatialRegularization
+  weight: 0.01
+  reduction: mean
+
 # kernel_align:
 #   name: KernelAlign
 #   weight: 1

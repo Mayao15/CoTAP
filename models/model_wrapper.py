@@ -70,6 +70,10 @@ class DinoFeaturizer(nn.Module):
             selective_kernel_size=cfg.selective_kernel_size,
             feat_type_default=cfg.feat_type_default,
             init_values=getattr(cfg, 'init_values', None),
+            feature_regularization=getattr(cfg, 'feature_regularization', 'oaf'),
+            diffusion_steps=getattr(cfg, 'diffusion_steps', 1),
+            diffusion_tau=getattr(cfg, 'diffusion_tau', 0.2),
+            diffusion_sigma=getattr(cfg, 'diffusion_sigma', 1.0),
         )
             
         if not require_grad:

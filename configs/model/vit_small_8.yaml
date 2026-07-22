@@ -34,3 +34,9 @@ attn_drop_rate: 0
 drop_path_rate: 0
 vit_type: "depth"
 feat_type_default: "all"
+
+# OAF replacement: oaf | anisotropic_diffusion | total_variation | none
+feature_regularization: "oaf"
+diffusion_steps: 1
+diffusion_tau: 0.2
+diffusion_sigma: 1.0

@@ -13,6 +13,7 @@ import sys
 sys.path.append('../../../')
 
 from datasets.transforms import normalize
+from models.feature_regularization import AnisotropicDiffusion
 
 
 def drop_path(x, drop_prob: float = 0., training: bool = False):
@@ -269,7 +270,8 @@ class VisionTransformer(nn.Module):
                  nmb_prototypes=300, depth=12, num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0.,
                  attn_drop_rate=0., drop_path_rate=0., norm_layer=nn.LayerNorm, n_layers_projection_head=3, n_projection_head=1,
                  head_idx_patch=0, head_idx_cls=1, selective_layer_start=11, selective_cache_num=64, selective_kernel_size=3, feat_type_default='all', 
-                 init_values=None, **kwargs):
+                 init_values=None, feature_regularization='oaf', diffusion_steps=1,
+                 diffusion_tau=0.2, diffusion_sigma=1.0, **kwargs):
         super().__init__()
         self.num_features = self.embed_dim = embed_dim
         self.embed_dim = embed_dim
@@ -279,6 +281,17 @@ class VisionTransformer(nn.Module):
         self.head_idx_cls = head_idx_cls
         assert selective_layer_start == 11
         self.selective_layer_start = selective_layer_start
+        valid_regularizers = {'oaf', 'anisotropic_diffusion', 'total_variation', 'none'}
+        if feature_regularization not in valid_regularizers:
+            raise ValueError(
+                'feature_regularization must be one of %s, got %r' %
+                (sorted(valid_regularizers), feature_regularization))
+        self.feature_regularization = feature_regularization
+        self.anisotropic_diffusion = AnisotropicDiffusion(
+            num_steps=diffusion_steps,
+            tau=diffusion_tau,
+            sigma=diffusion_sigma,
+        )
         self.cache_samples = MemoryBank(1024, selective_kernel_size)
         self.kernel = nn.Parameter(torch.zeros(selective_cache_num, embed_dim, selective_kernel_size, selective_kernel_size))
         trunc_normal_(self.kernel, std=1)
@@ -399,6 +412,8 @@ class VisionTransformer(nn.Module):
         return self.pos_drop(x)
 
     def update_kernel(self, x):
+        if self.feature_regularization != 'oaf':
+            return
         x = x[:, 1:]
         n = x.shape[0]
         d = x.shape[2]
@@ -409,6 +424,9 @@ class VisionTransformer(nn.Module):
     @torch.no_grad()
     def cluster(self, pl_module, niter=3000):
         from tqdm import tqdm
+
+        if self.feature_regularization != 'oaf':
+            return
         
         if self.cache_samples._init:
             return
@@ -445,6 +463,31 @@ class VisionTransformer(nn.Module):
 
         self.kernel.data = pl_module.broadcast(self.kernel.data, 0)
 
+    def forward_regularized(self, block, x, return_attention=False):
+        """Run the last ViT block and replace its OAF branch."""
+        x, attn = block(x, return_attention=True)
+        patch = x[:, 1:]
+        batch_size, num_patches, dim = patch.shape
+        height = int(math.sqrt(num_patches))
+        if height * height != num_patches:
+            raise ValueError('anisotropic diffusion requires a square patch grid')
+
+        if self.feature_regularization == 'anisotropic_diffusion':
+            patch_map = patch.transpose(1, 2).reshape(batch_size, dim, height, height)
+            filtered_patch = self.anisotropic_diffusion(patch_map)
+            filtered_patch = filtered_patch.flatten(2).transpose(1, 2)
+        else:
+            # TV is applied as an auxiliary loss to the projected patch map.
+            # Duplicating the branch retains OAF's 2D projector/checkpoint shape.
+            filtered_patch = patch
+
+        patch = block.norm_out_patch(torch.cat([patch, filtered_patch], dim=-1))
+        cls = block.norm_out_cls(torch.cat([x[:, :1], x[:, :1]], dim=-1))
+        x = torch.cat([cls, patch], dim=1)
+        if return_attention:
+            return x, attn
+        return x
+
     def forward_backbone(self, x, masks=None, last_self_attention=False, proj_head_idx=None, update_kernel=False):
         x = self.prepare_tokens(x, masks)
 
@@ -454,8 +497,16 @@ class VisionTransformer(nn.Module):
         if update_kernel:
             self.update_kernel(x)
         for i, blk in enumerate(self.blocks[self.selective_layer_start:-1]):
-            x = blk.forward_kernel(x, self.kernel.data)
-        x = self.blocks[-1].forward_kernel(x, self.kernel.data, return_attention=last_self_attention)
+            if self.feature_regularization == 'oaf':
+                x = blk.forward_kernel(x, self.kernel.data)
+            else:
+                x = self.forward_regularized(blk, x)
+        if self.feature_regularization == 'oaf':
+            x = self.blocks[-1].forward_kernel(
+                x, self.kernel.data, return_attention=last_self_attention)
+        else:
+            x = self.forward_regularized(
+                self.blocks[-1], x, return_attention=last_self_attention)
         if last_self_attention:
             x, attn = x[:2]
             attn = attn[:, :, 0, 1:]
@@ -469,7 +520,10 @@ class VisionTransformer(nn.Module):
             x = blk(x)
 
         for i, blk in enumerate(self.blocks[self.selective_layer_start:]):
-            x = blk.forward_kernel(x, self.kernel.data)
+            if self.feature_regularization == 'oaf':
+                x = blk.forward_kernel(x, self.kernel.data)
+            else:
+                x = self.forward_regularized(blk, x)
 
         x_cls = x[:, 0]
         x_patch = x[:, 1:]
@@ -485,7 +539,12 @@ class VisionTransformer(nn.Module):
             x = blk(x)
 
         for i, blk in enumerate(self.blocks[self.selective_layer_start:]):
-            x, attn, attn_ker = blk.forward_kernel(x, self.kernel.data, return_attention=True)
+            if self.feature_regularization == 'oaf':
+                x, attn, attn_ker = blk.forward_kernel(
+                    x, self.kernel.data, return_attention=True)
+            else:
+                x, attn = self.forward_regularized(blk, x, return_attention=True)
+                attn_ker = None
 
         x_cls = x[:, 0]
         x_patch = x[:, 1:]

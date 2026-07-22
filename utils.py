@@ -40,6 +40,8 @@ def share_cfg(cfg):
     cfg.loss_fn.share.head_idx_cls = cfg.model.head_idx_cls
     cfg.loss_fn.share.nmb_crops = cfg.dataset_train.nmb_crops
     cfg.loss_fn.share.world_size = cfg.training.num_gpus
+    cfg.loss_fn.share.feature_regularization = getattr(
+        cfg.model, 'feature_regularization', 'oaf')
     if cfg.model.arch == 'dino':
         cfg.loss_fn.share.patch_size = cfg.model.dino_patch_size
         cfg.dataset_train.patch_size = cfg.model.dino_patch_size
