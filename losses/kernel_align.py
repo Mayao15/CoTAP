@@ -22,8 +22,36 @@ class EntropyMaxLoss(nn.Module):
         self.cfg = cfg
 
     def forward(self, kernel, samples, **kwargs):
+        # The feature/kernel memory bank is intentionally empty during the
+        # first training steps.  In that warm-up period ``train.py`` passes
+        # ``None`` for ``samples`` (and may also pass ``None`` for ``kernel``),
+        # so this optional auxiliary loss must be a differentiable no-op
+        # rather than trying to take ``len(None)``.
+        if kernel is None or samples is None:
+            reference = kernel if kernel is not None else samples
+            if reference is None:
+                # No tensor is available to anchor the graph.  A scalar zero
+                # is sufficient; the wrapper multiplies it by this loss's
+                # configured weight.
+                loss = torch.tensor(0.0)
+            else:
+                loss = reference.sum() * 0.0
+            return [
+                {
+                    'name': 'loss_kernel_align',
+                    'loss': loss,
+                    'weight': self.cfg.weight
+                }
+            ]
+
         M, d, ks = kernel.shape[:3]
         N = len(samples)
+        if M == 0 or N == 0:
+            return [{
+                'name': 'loss_kernel_align',
+                'loss': kernel.sum() * 0.0,
+                'weight': self.cfg.weight
+            }]
         kernel = kernel.reshape(M, d*ks*ks)
         samples = samples.reshape(N, d*ks*ks)
 
